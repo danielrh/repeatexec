@@ -279,7 +279,7 @@ func main() {
         subcommand[0] = RUNNER
         subcommand = concatenate_string_arrays(subcommand, os.Args[1:])
     } else {
-        subcommand = make([]string, 0)
+        subcommand = os.Args[1:]
     }
     io.WriteString(os.Stdout, "ok\n")
     go accept_commands(COMMAND_PATH, STDIN_PATH, STDOUT_PATH, STDERR_PATH, EXITCODE_PATH,
