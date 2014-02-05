@@ -1,0 +1,1 @@
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","Command":["id", "-un"]}

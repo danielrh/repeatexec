@@ -32,19 +32,10 @@ import (
     "log"
     "os"
     "os/exec"
-    "path"
     "strconv"
     "syscall"
 )
 
-var PIPE_DIR = "/root"
-var STDIN_PATH = "/stdin"
-var STDOUT_PATH = "/stdout"
-var STDERR_PATH = "/stderr"
-var EXITCODE_PATH = "/exitcode"
-var COMMAND_PATH = "/command"
-var ABORT_PATH = "/abort"
-var PERMISSIONS = "0600"
 var STARTING_UID = "1000"
 var STARTING_GID = "1000"
 var MAX_UID = "1004"
@@ -58,19 +49,15 @@ func concatenate_string_arrays(s0, s1 []string) []string {
     return retval
 }
 
-func check_stats(f *os.File, permissions os.FileMode) {
-    stat, err := f.Stat()
-    if err != nil {
-        log.Fatalf("Error checking stats %v", err)
-    }
-    if (stat.Mode() & 0777) != permissions {
-        log.Fatalf("Stats have been altered to %0d", stat.Mode())
-    }
+type Instruction struct {
+    Command        []string
+    StdoutPipePath string
+    StderrPipePath string
+    StdinPipePath  string
+    Gid            int
 }
 
-func accept_commands(command_path string, stdin_path string,
-    stdout_path string, stderr_path string, exitcode_path string,
-    permissions uint32, command_prefix []string) {
+func accept_commands(command_prefix []string) {
     uid, err := strconv.Atoi(STARTING_UID)
     if err != nil {
         log.Fatalf("Could not convert user id %s: %v", STARTING_UID, err)
@@ -83,70 +70,58 @@ func accept_commands(command_path string, stdin_path string,
     if err != nil {
         log.Fatalf("Could not convert user id %s: %v", MAX_UID, err)
     }
-    var command []string
+    var instruction Instruction
+    instruction_buffer := bufio.NewReader(os.Stdin)
     for {
-        command_stream, err := os.Open(command_path)
+        instruction_json, err := instruction_buffer.ReadBytes('\n')
         if err != nil {
-            log.Fatal(err)
-        }
-        command_buffer := bufio.NewReader(command_stream)
-        command_json, err := command_buffer.ReadBytes('\n')
-        json_err := json.Unmarshal(command_json, &command)
-        if json_err == nil && len(command) > 0 {
-            log.Print("Opening stdin: " + stdin_path)
-            stdin_stream, err := os.Open(stdin_path)
-            if err == nil {
-                check_stats(stdin_stream, os.FileMode(permissions))
+            if err == io.EOF {
+                return
             }
+            log.Fatalf("Error on instruction stream %v\n", err)
+        }
+        json_err := json.Unmarshal(instruction_json, &instruction)
+        if json_err == nil && len(instruction.Command) > 0 {
+            syscall.Setgid(instruction.Gid)
+            log.Print("Opening stdin: " + instruction.StdinPipePath)
+            stdin_stream, err := os.Open(instruction.StdinPipePath)
             if err != nil {
                 log.Fatal(err)
             }
 
-            log.Print("Opening stdout: " + stdout_path)
-            stdout_stream, err := os.OpenFile(stdout_path, os.O_WRONLY, 0)
-            if err == nil {
-                check_stats(stdout_stream, os.FileMode(permissions))
-            }
+            log.Print("Opening stdout: " + instruction.StdoutPipePath)
+            stdout_stream, err := os.OpenFile(instruction.StdoutPipePath, os.O_WRONLY, 0)
             if err != nil {
                 stdin_stream.Close()
                 log.Fatal(err)
             }
-            log.Print("Opening stderr: " + stderr_path)
-            stderr_stream, err := os.OpenFile(stderr_path, os.O_WRONLY, 0)
-            if err == nil {
-                check_stats(stderr_stream, os.FileMode(permissions))
-            }
+            log.Print("Opening stderr: " + instruction.StderrPipePath)
+            stderr_stream, err := os.OpenFile(instruction.StderrPipePath, os.O_WRONLY, 0)
             if err != nil {
                 stdin_stream.Close()
                 stdout_stream.Close()
                 log.Fatal(err)
             }
-            log.Print("Opening exitcode: " + exitcode_path)
-            exitcode_stream, err := os.OpenFile(exitcode_path, os.O_WRONLY, 0)
-            if err == nil {
-                check_stats(exitcode_stream, os.FileMode(permissions))
-            }
-            if err != nil {
-                stdin_stream.Close()
-                stdout_stream.Close()
-                stderr_stream.Close()
-                log.Fatal(err)
-            }
-            log.Print("Starting and waiting " + string(command_json))
+            log.Print("Starting and waiting " + string(instruction_json))
+            command := instruction.Command
             if len(command) > 0 && command[0] == "newuser" {
                 uid += 1
                 gid += 1
                 if uid > max_uid {
                     io.WriteString(stdout_stream, "-1\n")
-                    log.Fatalf("uid %d is higher than the maximum allowed %d: restart...", uid, max_uid)
+                    stderr_stream.Close()
+                    stdout_stream.Close()
+                    stdin_stream.Close()
+                    log.Fatalf("uid %d is higher than the maximum (%d): restart...", uid, max_uid)
                 }
                 io.WriteString(stdout_stream, strconv.Itoa(uid)+"\n")
+                stderr_stream.Close()
+                stdout_stream.Close()
+                stdin_stream.Close()
                 null_byte := [1]byte{0}
-                exitcode_stream.Write(null_byte[:])
+                os.Stdout.Write(null_byte[:])
             } else {
-
-                concatenated_command := concatenate_string_arrays(command_prefix,
-                    command)
+                concatenated_command := concatenate_string_arrays(command_prefix, command)
                 if len(concatenated_command) > 0 {
                     proc := exec.Command(concatenated_command[0])
                     proc.Args = concatenated_command
@@ -173,44 +148,26 @@ func accept_commands(command_path string, stdin_path string,
                         exit_code[0] = 0
                     }
                     log.Printf("Process exited with error code %d", exit_code)
-                    exitcode_stream.Write(exit_code[:])
+                    stderr_stream.Close()
+                    stdout_stream.Close()
+                    stdin_stream.Close()
+                    if instruction_buffer.Buffered() > 0 {
+                        log.Fatalf("%d bytes in command buffer before exit code has been sent\n",
+                            instruction_buffer.Buffered())
+                    }
+                    os.Stdout.Write(exit_code[:])
                 }
             }
-            exitcode_stream.Close()
-            stderr_stream.Close()
-            stdout_stream.Close()
-            stdin_stream.Close()
-        }
-        command_stream.Close()
-        if err != nil {
-            break
+        } else {
+            log.Printf("Error with instruction stream %s: %v", instruction_json, json_err)
         }
     }
-}
-
-func abort() {
-    pid := os.Getpid()
-    log.Print(pid) //FIXME:
-    _ = os.RemoveAll(STDIN_PATH)
-    _ = os.RemoveAll(STDOUT_PATH)
-    _ = os.RemoveAll(STDERR_PATH)
-    _ = os.RemoveAll(COMMAND_PATH)
-    _ = os.RemoveAll(EXITCODE_PATH)
-    _ = os.RemoveAll(ABORT_PATH)
-    os.Exit(0)
 }
 
 func main() {
     if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version") {
         fmt.Printf("%s\nCONFIGURED WITH\n", VERSION)
         var configuration_params = []string{
-            "pipe directory", PIPE_DIR,
-            "command pipe", COMMAND_PATH,
-            "stdin pipe", STDIN_PATH,
-            "stdout pipe", STDOUT_PATH,
-            "stderr pipe", STDERR_PATH,
-            "abort pipe", ABORT_PATH,
-            "pipe permissions", PERMISSIONS,
             "min uid", STARTING_UID,
             "min gid", STARTING_UID,
             "max uid", MAX_UID,
@@ -225,54 +182,6 @@ func main() {
         }
         os.Exit(0)
     }
-
-    perm64, err := strconv.ParseUint(PERMISSIONS, 8, 32)
-    permissions := uint32(perm64)
-    if err != nil {
-        log.Fatalf("Couldn't parse permissions %v", err)
-    }
-    STDIN_PATH = path.Join(PIPE_DIR, STDIN_PATH)
-    STDOUT_PATH = path.Join(PIPE_DIR, STDOUT_PATH)
-    STDERR_PATH = path.Join(PIPE_DIR, STDERR_PATH)
-    EXITCODE_PATH = path.Join(PIPE_DIR, EXITCODE_PATH)
-    ABORT_PATH = path.Join(PIPE_DIR, ABORT_PATH)
-    COMMAND_PATH = path.Join(PIPE_DIR, COMMAND_PATH)
-    _ = os.RemoveAll(COMMAND_PATH)
-    _ = os.RemoveAll(STDIN_PATH)
-    _ = os.RemoveAll(STDOUT_PATH)
-    _ = os.RemoveAll(STDERR_PATH)
-    _ = os.RemoveAll(EXITCODE_PATH)
-    _ = os.RemoveAll(ABORT_PATH)
-    err = syscall.Mkfifo(ABORT_PATH, permissions)
-    if err != nil {
-        log.Fatalf("Abort file exists %v", err)
-    }
-    os.Chmod(ABORT_PATH, os.FileMode(permissions))
-    err = syscall.Mkfifo(EXITCODE_PATH, permissions)
-    if err != nil {
-        log.Fatalf("Exitcode file exists %v", err)
-    }
-    os.Chmod(EXITCODE_PATH, os.FileMode(permissions))
-    err = syscall.Mkfifo(STDERR_PATH, permissions)
-    if err != nil {
-        log.Fatalf("Stderr file exists %v", err)
-    }
-    os.Chmod(STDERR_PATH, os.FileMode(permissions))
-    err = syscall.Mkfifo(STDOUT_PATH, permissions)
-    if err != nil {
-        log.Fatalf("Stdout file exists %v", err)
-    }
-    os.Chmod(STDOUT_PATH, os.FileMode(permissions))
-    err = syscall.Mkfifo(STDIN_PATH, permissions)
-    if err != nil {
-        log.Fatalf("Stdin file exists %v", err)
-    }
-    os.Chmod(STDIN_PATH, os.FileMode(permissions))
-    err = syscall.Mkfifo(COMMAND_PATH, permissions)
-    if err != nil {
-        log.Fatalf("Command file exists %v", err)
-    }
-    os.Chmod(COMMAND_PATH, os.FileMode(permissions))
     var subcommand []string
     if len(RUNNER) != 0 {
         subcommand = make([]string, 1)
@@ -281,20 +190,5 @@ func main() {
     } else {
         subcommand = os.Args[1:]
     }
-    io.WriteString(os.Stdout, "ok\n")
-    go accept_commands(COMMAND_PATH, STDIN_PATH, STDOUT_PATH, STDERR_PATH, EXITCODE_PATH,
-        permissions, subcommand)
-    for {
-        // multiple people might hold abort open -- we need someone to write a byte
-        f, err := os.Open(ABORT_PATH)
-        if err == nil {
-            var aborted [1]byte
-            _, _ = f.Read(aborted[:])
-            abort()
-            f.Close()
-        } else {
-            log.Fatalf("Reopening abort %v\n", err)
-            abort()
-        }
-    }
+    accept_commands(subcommand)
 }
