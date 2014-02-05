@@ -39,6 +39,9 @@ import (
 var STARTING_UID = "1000"
 var STARTING_GID = "1000"
 var MAX_UID = "1004"
+var OVERRIDE_FLAG = ""
+var OVERRIDE_PROPERTIES = "alphanumdashunder"
+var OVERRIDE_PREFIX = ""
 var RUNNER = ""
 var VERSION = "unknown"
 
@@ -49,8 +52,21 @@ func concatenate_string_arrays(s0, s1 []string) []string {
     return retval
 }
 
+func isalphanumdashunder(s string) bool {
+    for _, item := range s {
+        item_is_alpha := (item >= 'A' && item <= 'Z') || (item >= 'a' && item <= 'z')
+        item_is_numeric := (item >= '0' && item <= '9')
+        item_is_underdash := (item == '_' || item == '-')
+        if (!item_is_alpha) && (!item_is_numeric) && !item_is_underdash {
+            return false
+        }
+    }
+    return true
+}
+
 type Instruction struct {
     Command        []string
+    Override       string
     StdoutPipePath string
     StderrPipePath string
     StdinPipePath  string
@@ -122,6 +138,27 @@ func accept_commands(command_prefix []string) {
                 os.Stdout.Write(null_byte[:])
             } else {
                 concatenated_command := concatenate_string_arrays(command_prefix, command)
+                if len(OVERRIDE_FLAG) > 0 {
+                    for i, flag := range concatenated_command {
+                        in_range := i+1 < len(command_prefix)
+                        if flag == OVERRIDE_FLAG && in_range && len(instruction.Override) > 0 {
+                            override := instruction.Override
+                            switch OVERRIDE_PROPERTIES {
+                            case "":
+                                concatenated_command[i+1] = OVERRIDE_PREFIX + override
+                            case "alphanumdashunder":
+                                if isalphanumdashunder(override) {
+                                    concatenated_command[i+1] = OVERRIDE_PREFIX + override
+                                } else {
+                                    log.Fatalf("Not alpha numeric with dashes %s", override)
+                                }
+                                break
+                            default:
+                                log.Fatal("Can't parse override invariant " + OVERRIDE_PROPERTIES)
+                            }
+                        }
+                    }
+                }
                 if len(concatenated_command) > 0 {
                     proc := exec.Command(concatenated_command[0])
                     proc.Args = concatenated_command
@@ -139,11 +176,7 @@ func accept_commands(command_prefix []string) {
                     err = proc.Wait()
                     var exit_code [1]byte
                     if err != nil {
-                        if proc.ProcessState.Success() {
-                            exit_code[0] = 2
-                        } else {
-                            exit_code[0] = 1
-                        }
+                        exit_code[0] = 1
                     } else {
                         exit_code[0] = 0
                     }
