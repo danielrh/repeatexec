@@ -2,7 +2,15 @@ import os
 import subprocess
 import sys
 import threading
-subprocess.call(["go","build"])
+try:
+    os.mkfifo("/tmp/shutdown",0666)
+except OSError:
+    pass
+try:
+    os.mkfifo("/tmp/abort",0666)
+except OSError:
+    pass
+subprocess.check_call(["go","build", "-ldflags", "-X main.FALLBACK_SHUTDOWN_PIPE /tmp/shutdown -X main.FALLBACK_ABORT_PIPE /tmp/abort -X main.RUNNER0 strace -X main.RUNNER1 strace+  -X main.RUNNER_ADDITIONAL_FLAG -f -X main.RUNER_CONFIG_PREFIX trace= -X main.RUNNER_CONFIG_FLAG -e -X main.RUNNER_PATH /usr/bin/"])
 try:
     os.mkfifo("/tmp/stdin",0666)
 except OSError:

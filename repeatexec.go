@@ -61,6 +61,11 @@ var RUNNER_ADDITIONAL_FLAG = "-f"
 
 var VERSION = "unknown"
 
+var ABORT_PIPE = "/pipes/abort"
+var SHUTDOWN_PIPE = "/pipes/shutdown"
+var FALLBACK_ABORT_PIPE = "/pipes/abort"
+var FALLBACK_SHUTDOWN_PIPE = "/pipes/shutdown"
+
 func concatenate_string_arrays(s0, s1 []string) []string {
     retval := make([]string, len(s0)+len(s1))
     copy(retval, s0)
@@ -106,6 +111,34 @@ type Instruction struct {
     Gid int
 }
 
+func read_shutdown(pipe_name string, pipe_name2 string, shutdown_channel chan<- int) {
+    f, err := os.Open(pipe_name)
+    if err != nil {
+        f, err = os.Open(pipe_name2)
+    }
+    if err == nil {
+        f.Close()
+        shutdown_channel <- 0
+    }
+}
+func read_instructions(instruction_channel chan<- []byte, shutdown_channel chan<- int) {
+    instruction_buffer := bufio.NewReader(os.Stdin)
+    for {
+        instruction_json, err := instruction_buffer.ReadBytes('\n')
+        if err != nil {
+            if err == io.EOF {
+                shutdown_channel <- 0
+                return
+            }
+            log.Fatalf("Error on instruction stream %v\n", err)
+        }
+        instruction_channel <- instruction_json
+    }
+}
+
+func wait_proc(proc *exec.Cmd, waited_channel chan<- error) {
+    waited_channel <- proc.Wait()
+}
 func accept_commands() {
     uid, err := strconv.Atoi(STARTING_UID)
     if err != nil {
@@ -119,9 +152,24 @@ func accept_commands() {
     if err != nil {
         log.Fatalf("Could not convert user id %s: %v", MAX_UID, err)
     }
-    instruction_buffer := bufio.NewReader(os.Stdin)
+    proc_channel := make(chan error)
+    instruction_channel := make(chan []byte)
+    abort_channel := make(chan int)
+    go read_shutdown(ABORT_PIPE, FALLBACK_ABORT_PIPE, abort_channel)
+    shutdown_channel := make(chan int)
+    go read_shutdown(SHUTDOWN_PIPE, FALLBACK_SHUTDOWN_PIPE, shutdown_channel)
+    go read_instructions(instruction_channel, shutdown_channel)
+    var instruction_json []byte
     for {
-        instruction_json, err := instruction_buffer.ReadBytes('\n')
+        select {
+        case exit_code := <-shutdown_channel:
+            os.Exit(exit_code)
+            return
+        case exit_code := <-abort_channel:
+            os.Exit(exit_code)
+            return
+        case instruction_json = <-instruction_channel:
+        }
         if err != nil {
             if err == io.EOF {
                 return
@@ -174,7 +222,8 @@ func accept_commands() {
                         instruction.Runner,
                         RUNNERS)
                 } else if !isalphanumdashunder(instruction.RunnerConfig) {
-                    log.Fatalf("Using a disallowed configuration command: %s", instruction.RunnerConfig)
+                    log.Fatalf("Using a disallowed configuration command: %s",
+                        instruction.RunnerConfig)
                 } else if len(instruction.RunnerConfig) == 0 {
                     log.Fatalf("Did not specify configuration to use with runner")
                 } else {
@@ -197,20 +246,29 @@ func accept_commands() {
                     sys_proc_attr.Credential = &cred
                     proc.SysProcAttr = &sys_proc_attr
                     proc.Start()
-                    err = proc.Wait()
-                    if err != nil {
-                        exit_code[0] = 1
-                    } else {
-                        exit_code[0] = 0
+                    go wait_proc(proc, proc_channel)
+                    select {
+                    case err = <-proc_channel:
+                        if err != nil {
+                            exit_code[0] = 1
+                        } else {
+                            exit_code[0] = 0
+                        }
+                    case exit_code := <-abort_channel:
+                        os.Exit(exit_code)
+                        return
                     }
                 }
             }
             stderr_stream.Close()
             stdout_stream.Close()
             stdin_stream.Close()
-            if instruction_buffer.Buffered() > 0 {
-                log.Fatalf("%d bytes in command buffer before exit code has been sent\n",
-                    instruction_buffer.Buffered())
+            select {
+            case bad_message := <-instruction_channel:
+                log.Fatalf("%v bytes in command buffer before exit code has been sent\n",
+                    bad_message)
+            default:
+                break
             }
             os.Stdout.Write(exit_code[:])
         } else {
