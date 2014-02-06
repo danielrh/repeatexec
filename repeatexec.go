@@ -43,7 +43,7 @@ var STARTING_GID = "1000"
 var MAX_UID = "1004"
 
 //The path the next binary should be invoked from
-var RUNNER_PATH = "/usr/bin"
+var RUNNER_PATH = "/usr/bin/"
 
 //The types of binaries allowed to be selected by the user
 var RUNNER0 = "strace"
@@ -178,7 +178,7 @@ func accept_commands() {
                 } else if len(instruction.RunnerConfig) == 0 {
                     log.Fatalf("Did not specify configuration to use with runner")
                 } else {
-                    command_prefix := []string{instruction.Runner,
+                    command_prefix := []string{RUNNER_PATH + instruction.Runner,
                         RUNNER_CONFIG_FLAG,
                         RUNNER_CONFIG_PREFIX + instruction.RunnerConfig,
                         RUNNER_ADDITIONAL_FLAG,
@@ -240,9 +240,9 @@ func main() {
                 fmt.Printf("\n")
             }
         }
-        fmt.Printf("Configured Runners")
+        fmt.Printf("Configured Runners:\n")
         for _, runner := range RUNNERS {
-            fmt.Printf("%s%s", RUNNER_CONFIG_PREFIX, runner)
+            fmt.Printf("%s%s\n", RUNNER_PATH, runner)
         }
         os.Exit(0)
     }
