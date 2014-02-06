@@ -53,6 +53,10 @@ var RUNNERS = []string{RUNNER0, RUNNER1}
 //The flag configuring the binary
 var RUNNER_CONFIG_FLAG = "-e"
 
+var RUNNER_ENVIRONMENT_FLAG = "-E"
+
+var RUNNER_MEMORY_FLAG = "-O"
+
 //the prefix to valid configuration flag
 var RUNNER_CONFIG_PREFIX = "trace="
 
@@ -101,6 +105,10 @@ type Instruction struct {
     CreateNewUser bool
     // an alphanumeric (with dashes and underbars) config file that will be passed to the runner
     RunnerConfig string
+    // sets environment variables to be set in the runner
+    RunnerEnvironment map[string]string
+    // sets a resource limit on the runner
+    RunnerMemory int64
     // Runner to use to launch this command: must be in the array of allowed RUNNERS
     Runner string
     // The location of the stdin, stdout, and stderr pipes, used to communicate with the caller
@@ -230,9 +238,20 @@ func accept_commands() {
                     command_prefix := []string{RUNNER_PATH + instruction.Runner,
                         RUNNER_CONFIG_FLAG,
                         RUNNER_CONFIG_PREFIX + instruction.RunnerConfig,
-                        RUNNER_ADDITIONAL_FLAG,
-                        "--"}
+                        RUNNER_ADDITIONAL_FLAG}
+                    if instruction.RunnerMemory > 0 {
+                        command_prefix = concatenate_string_arrays(command_prefix,
+                            []string{RUNNER_MEMORY_FLAG,
+                                strconv.FormatInt(instruction.RunnerMemory, 10)})
+                    }
+                    for k,v := range instruction.RunnerEnvironment {
+                        command_prefix = concatenate_string_arrays(command_prefix,
+                            []string{RUNNER_ENVIRONMENT_FLAG, k + "=" + v})
+                    }
+                    concatenate_string_arrays(command_prefix, []string{"--"})
                     concatenated_command := concatenate_string_arrays(command_prefix, command)
+                    log.Printf("PREFIX %v\n",concatenated_command)
+
                     proc := exec.Command(concatenated_command[0])
                     proc.Args = concatenated_command
                     proc.Stdin = stdin_stream
