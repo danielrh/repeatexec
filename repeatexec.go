@@ -27,6 +27,7 @@ package main
 import (
     "bufio"
     "encoding/json"
+    "flag"
     "fmt"
     "io"
     "log"
@@ -40,10 +41,24 @@ import (
 var STARTING_UID = "1000"
 var STARTING_GID = "1000"
 var MAX_UID = "1004"
-var OVERRIDE_FLAG = ""
-var OVERRIDE_PROPERTIES = "alphanumdashunder"
-var OVERRIDE_PREFIX = ""
-var RUNNER = ""
+
+//The path the next binary should be invoked from
+var RUNNER_PATH = "/usr/bin"
+
+//The types of binaries allowed to be selected by the user
+var RUNNER0 = "strace"
+var RUNNER1 = "strace+"
+var RUNNERS = []string{RUNNER0, RUNNER1}
+
+//The flag configuring the binary
+var RUNNER_CONFIG_FLAG = "-e"
+
+//the prefix to valid configuration flag
+var RUNNER_CONFIG_PREFIX = "trace="
+
+//a flag that will be passed into the runner every time
+var RUNNER_ADDITIONAL_FLAG = "-f"
+
 var VERSION = "unknown"
 
 func concatenate_string_arrays(s0, s1 []string) []string {
@@ -51,6 +66,15 @@ func concatenate_string_arrays(s0, s1 []string) []string {
     copy(retval, s0)
     copy(retval[len(s0):], s1)
     return retval
+}
+
+func within(needle string, haystack []string) bool {
+    for _, item := range haystack {
+        if item == needle {
+            return true
+        }
+    }
+    return false
 }
 
 func isalphanumdashunder(s string) bool {
@@ -66,15 +90,23 @@ func isalphanumdashunder(s string) bool {
 }
 
 type Instruction struct {
-    Command        []string
-    Override       string
+    // The arguments to pass to exec
+    Command []string
+    // Whether, instead of running a new command, a new user should be switched to
+    CreateNewUser bool
+    // an alphanumeric (with dashes and underbars) config file that will be passed to the runner
+    RunnerConfig string
+    // Runner to use to launch this command: must be in the array of allowed RUNNERS
+    Runner string
+    // The location of the stdin, stdout, and stderr pipes, used to communicate with the caller
+    StdinPipePath  string
     StdoutPipePath string
     StderrPipePath string
-    StdinPipePath  string
-    Gid            int
+    // group such that the above 3 pipes are openable: Stdout, Stderr for WRONLY, Stdin for RDONLYs
+    Gid int
 }
 
-func accept_commands(command_prefix []string) {
+func accept_commands() {
     uid, err := strconv.Atoi(STARTING_UID)
     if err != nil {
         log.Fatalf("Could not convert user id %s: %v", STARTING_UID, err)
@@ -87,7 +119,6 @@ func accept_commands(command_prefix []string) {
     if err != nil {
         log.Fatalf("Could not convert user id %s: %v", MAX_UID, err)
     }
-    var instruction Instruction
     instruction_buffer := bufio.NewReader(os.Stdin)
     for {
         instruction_json, err := instruction_buffer.ReadBytes('\n')
@@ -97,25 +128,23 @@ func accept_commands(command_prefix []string) {
             }
             log.Fatalf("Error on instruction stream %v\n", err)
         }
+        var instruction Instruction
+
         json_err := json.Unmarshal(instruction_json, &instruction)
-        if json_err == nil && len(instruction.Command) > 0 {
+        if json_err == nil && (instruction.CreateNewUser || len(instruction.Command) > 0) {
             // this guarantees that the Setgid call applies to the same OSThread that will then
             // run os.Open on the stdin, stdout and stderr pipes.
             runtime.LockOSThread()
             syscall.Setgid(instruction.Gid)
-            log.Print("Opening stdin: " + instruction.StdinPipePath)
             stdin_stream, err := os.Open(instruction.StdinPipePath)
             if err != nil {
                 log.Fatal(err)
             }
-
-            log.Print("Opening stdout: " + instruction.StdoutPipePath)
             stdout_stream, err := os.OpenFile(instruction.StdoutPipePath, os.O_WRONLY, 0)
             if err != nil {
                 stdin_stream.Close()
                 log.Fatal(err)
             }
-            log.Print("Opening stderr: " + instruction.StderrPipePath)
             stderr_stream, err := os.OpenFile(instruction.StderrPipePath, os.O_WRONLY, 0)
             if err != nil {
                 stdin_stream.Close()
@@ -123,9 +152,12 @@ func accept_commands(command_prefix []string) {
                 log.Fatal(err)
             }
             runtime.UnlockOSThread()
-            log.Print("Starting and waiting " + string(instruction_json))
             command := instruction.Command
-            if len(command) > 0 && command[0] == "newuser" {
+            var exit_code [1]byte
+            if instruction.CreateNewUser {
+                if len(command) > 0 {
+                    log.Print("Command %v ignored because we are creating a new user\n", command)
+                }
                 uid += 1
                 gid += 1
                 if uid > max_uid {
@@ -136,35 +168,22 @@ func accept_commands(command_prefix []string) {
                     log.Fatalf("uid %d is higher than the maximum (%d): restart...", uid, max_uid)
                 }
                 io.WriteString(stdout_stream, strconv.Itoa(uid)+"\n")
-                stderr_stream.Close()
-                stdout_stream.Close()
-                stdin_stream.Close()
-                null_byte := [1]byte{0}
-                os.Stdout.Write(null_byte[:])
             } else {
-                concatenated_command := concatenate_string_arrays(command_prefix, command)
-                if len(OVERRIDE_FLAG) > 0 {
-                    for i, flag := range concatenated_command {
-                        in_range := i+1 < len(command_prefix)
-                        if flag == OVERRIDE_FLAG && in_range && len(instruction.Override) > 0 {
-                            override := instruction.Override
-                            switch OVERRIDE_PROPERTIES {
-                            case "":
-                                concatenated_command[i+1] = OVERRIDE_PREFIX + override
-                            case "alphanumdashunder":
-                                if isalphanumdashunder(override) {
-                                    concatenated_command[i+1] = OVERRIDE_PREFIX + override
-                                } else {
-                                    log.Fatalf("Not alpha numeric with dashes %s", override)
-                                }
-                                break
-                            default:
-                                log.Fatal("Can't parse override invariant " + OVERRIDE_PROPERTIES)
-                            }
-                        }
-                    }
-                }
-                if len(concatenated_command) > 0 {
+                if !within(instruction.Runner, RUNNERS) {
+                    log.Fatalf("Using a disallowed runner %s, not within %v\n",
+                        instruction.Runner,
+                        RUNNERS)
+                } else if !isalphanumdashunder(instruction.RunnerConfig) {
+                    log.Fatalf("Using a disallowed configuration command: %s", instruction.RunnerConfig)
+                } else if len(instruction.RunnerConfig) == 0 {
+                    log.Fatalf("Did not specify configuration to use with runner")
+                } else {
+                    command_prefix := []string{instruction.Runner,
+                        RUNNER_CONFIG_FLAG,
+                        RUNNER_CONFIG_PREFIX + instruction.RunnerConfig,
+                        RUNNER_ADDITIONAL_FLAG,
+                        "--"}
+                    concatenated_command := concatenate_string_arrays(command_prefix, command)
                     proc := exec.Command(concatenated_command[0])
                     proc.Args = concatenated_command
                     proc.Stdin = stdin_stream
@@ -179,23 +198,21 @@ func accept_commands(command_prefix []string) {
                     proc.SysProcAttr = &sys_proc_attr
                     proc.Start()
                     err = proc.Wait()
-                    var exit_code [1]byte
                     if err != nil {
                         exit_code[0] = 1
                     } else {
                         exit_code[0] = 0
                     }
-                    log.Printf("Process exited with error code %d", exit_code)
-                    stderr_stream.Close()
-                    stdout_stream.Close()
-                    stdin_stream.Close()
-                    if instruction_buffer.Buffered() > 0 {
-                        log.Fatalf("%d bytes in command buffer before exit code has been sent\n",
-                            instruction_buffer.Buffered())
-                    }
-                    os.Stdout.Write(exit_code[:])
                 }
             }
+            stderr_stream.Close()
+            stdout_stream.Close()
+            stdin_stream.Close()
+            if instruction_buffer.Buffered() > 0 {
+                log.Fatalf("%d bytes in command buffer before exit code has been sent\n",
+                    instruction_buffer.Buffered())
+            }
+            os.Stdout.Write(exit_code[:])
         } else {
             log.Printf("Error with instruction stream %s: %v", instruction_json, json_err)
         }
@@ -204,13 +221,17 @@ func accept_commands(command_prefix []string) {
 
 func main() {
     runtime.GOMAXPROCS(1)
-    if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version") {
+    version := flag.Bool("version", false, "Print out version information")
+    flag.Parse()
+    if *version {
         fmt.Printf("%s\nCONFIGURED WITH\n", VERSION)
         var configuration_params = []string{
             "min uid", STARTING_UID,
             "min gid", STARTING_UID,
             "max uid", MAX_UID,
-            "interim binary", RUNNER}
+            "runner config flag", RUNNER_CONFIG_FLAG,
+            "runner config prefix", RUNNER_CONFIG_PREFIX,
+            "runner additional flag", RUNNER_ADDITIONAL_FLAG}
         for i, item := range configuration_params {
             fmt.Printf("%s", item)
             if i%2 == 0 {
@@ -219,15 +240,11 @@ func main() {
                 fmt.Printf("\n")
             }
         }
+        fmt.Printf("Configured Runners")
+        for _, runner := range RUNNERS {
+            fmt.Printf("%s%s", RUNNER_CONFIG_PREFIX, runner)
+        }
         os.Exit(0)
     }
-    var subcommand []string
-    if len(RUNNER) != 0 {
-        subcommand = make([]string, 1)
-        subcommand[0] = RUNNER
-        subcommand = concatenate_string_arrays(subcommand, os.Args[1:])
-    } else {
-        subcommand = os.Args[1:]
-    }
-    accept_commands(subcommand)
+    accept_commands()
 }

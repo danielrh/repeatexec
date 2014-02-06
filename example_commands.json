@@ -1,1 +1,10 @@
-{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","Command":["id"], "Override":"-l"}
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","Command":["id"], "Runner":"strace", "RunnerConfig":"process"}
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","CreateNewUser":true}
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","Command":["id"], "Runner":"strace", "RunnerConfig":"execve"}
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","CreateNewUser":true}
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","Command":["id", "-un"], "Runner":"strace", "RunnerConfig":"open"}
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","CreateNewUser":true}
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","Command":["whoami"], "Runner":"strace", "RunnerConfig":"access"}
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","CreateNewUser":true}
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","Command":["whoami"], "Runner":"strace", "RunnerConfig":"process"}
+{"Gid":1001,"StdinPipePath":"/tmp/stdin","StdoutPipePath":"/tmp/stdout","StderrPipePath":"/tmp/stderr","CreateNewUser":true}
