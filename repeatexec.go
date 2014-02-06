@@ -32,6 +32,7 @@ import (
     "log"
     "os"
     "os/exec"
+    "runtime"
     "strconv"
     "syscall"
 )
@@ -98,6 +99,9 @@ func accept_commands(command_prefix []string) {
         }
         json_err := json.Unmarshal(instruction_json, &instruction)
         if json_err == nil && len(instruction.Command) > 0 {
+            // this guarantees that the Setgid call applies to the same OSThread that will then
+            // run os.Open on the stdin, stdout and stderr pipes.
+            runtime.LockOSThread()
             syscall.Setgid(instruction.Gid)
             log.Print("Opening stdin: " + instruction.StdinPipePath)
             stdin_stream, err := os.Open(instruction.StdinPipePath)
@@ -118,6 +122,7 @@ func accept_commands(command_prefix []string) {
                 stdout_stream.Close()
                 log.Fatal(err)
             }
+            runtime.UnlockOSThread()
             log.Print("Starting and waiting " + string(instruction_json))
             command := instruction.Command
             if len(command) > 0 && command[0] == "newuser" {
@@ -198,6 +203,7 @@ func accept_commands(command_prefix []string) {
 }
 
 func main() {
+    runtime.GOMAXPROCS(1)
     if len(os.Args) > 1 && (os.Args[1] == "-version" || os.Args[1] == "--version") {
         fmt.Printf("%s\nCONFIGURED WITH\n", VERSION)
         var configuration_params = []string{
